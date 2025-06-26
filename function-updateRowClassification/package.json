@@ -1,0 +1,13 @@
+{
+  "name": "update-row-classification-function",
+  "version": "1.0.0",
+  "description": "HTTP function for users to update row classifications and create an audit trail.",
+  "main": "index.js",
+  "dependencies": {
+    "@google-cloud/functions-framework": "^3.0.0",
+    "firebase-admin": "^12.1.0"
+  },
+  "engines": {
+    "node": "22"
+  }
+}

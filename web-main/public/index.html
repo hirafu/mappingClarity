@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Project Clarity</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, doc, onSnapshot, updateDoc, getDoc, query, orderBy, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        window.firebase = { initializeApp, getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, getFirestore, collection, doc, onSnapshot, updateDoc, getDoc, query, orderBy, getDocs };
+    </script>
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .view { display: none; }
+        .view.active { display: block; }
+        .confidence-low { background-color: #FEF2F2; }
+        .confidence-mid { background-color: #FFFBEB; }
+        .confidence-high { background-color: #F0FDF4; }
+        thead th { position: sticky; top: 0; z-index: 10; background-color: #f9fafb; }
+        .loader { border: 4px solid #f3f3f3; border-top: 4px solid #3498db; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .nav-link.active { text-decoration: underline; font-weight: 700; }
+        #audit-modal-backdrop.hidden { display: none; }
+    </style>
+</head>
+
+<body class="bg-gray-50">
+    <div id="app-container" class="container mx-auto p-4 md:p-8">
+        <!-- App content will be rendered here by JavaScript -->
+    </div>
+    
+    <!-- Audit Trail Modal -->
+    <div id="audit-modal-backdrop" class="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full hidden">
+        <div class="relative top-20 mx-auto p-5 border w-full max-w-2xl shadow-lg rounded-md bg-white">
+            <div class="mt-3">
+                <div class="flex justify-between items-center"><h3 class="text-lg leading-6 font-medium text-gray-900">Audit History</h3><button id="close-audit-modal" class="text-gray-400 hover:text-gray-600">&times;</button></div>
+                <div id="audit-modal-content" class="mt-2 px-7 py-3 max-h-96 overflow-y-auto"></div>
+                <div class="items-center px-4 py-3"><button id="close-audit-modal-btn" class="px-4 py-2 bg-gray-500 text-white text-base font-medium rounded-md w-full shadow-sm hover:bg-gray-600">Close</button></div>
+            </div>
+        </div>
+    </div>
+
+
+    <script type="module">
+        // --- CONFIGURATION ---
+        const firebaseConfig = {
+            apiKey: "",
+            authDomain: "p",
+            projectId: "",
+            storageBucket: "",
+            messagingSenderId: "",
+            appId: ""
+        };
+        const uploadFileFunctionUrl = 'https://us-central1-project-clarity-463800.cloudfunctions.net/uploadFile';
+        const inviteUserFunctionUrl = 'https://us-central1-project-clarity-463800.cloudfunctions.net/inviteUser';
+        const manageUsersFunctionUrl = 'https://us-central1-project-clarity-463800.cloudfunctions.net/manageUser';
+        const updateRowFunctionUrl = 'https://us-central1-project-clarity-463800.cloudfunctions.net/updateRowClassification';
+        const createPipelineFunctionUrl = 'https://us-central1-project-clarity-463800.cloudfunctions.net/createOrUpdatePipeline';
+        const getMappingSuggestionsUrl = 'YOUR_getMappingSuggestions_FUNCTION_URL';
+
+        // --- STATE & GLOBAL VARIABLES ---
+        let db, auth, currentUser, userClaims, currentJobId, structuredDefinitions = {}, tableData = [], originalDataHeaders = [], listeners = {};
+        let uploadView, historyView, reviewView, adminView, pipelinesView;
+        
+        // --- TEMPLATES (HTML GENERATORS) ---
+        const loginShellHTML = `<div class="w-full max-w-md mx-auto mt-20 p-8 space-y-8 bg-white rounded-xl shadow-lg"><div class="text-center"><h1 class="text-3xl font-bold text-gray-800">Welcome to Project Clarity</h1><p class="mt-2 text-lg text-gray-600">Please sign in to continue</p></div><form id="login-form" class="space-y-6"><div><label for="email" class="block text-sm font-medium text-gray-700">Email Address</label><input type="email" id="email" required class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm"></div><div><label for="password" class="block text-sm font-medium text-gray-700">Password</label><input type="password" id="password" required class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm"></div><div><button type="submit" class="w-full flex justify-center py-2 px-4 border text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700">Sign In</button></div></form><div id="login-status" class="text-center text-sm text-red-500"></div></div>`;
+        const getAppShellHTML = () => `<header class="text-center mb-6"><a href="#" class="text-5xl font-bold text-gray-800">Project Clarity</a><p class="mt-2 text-xl text-gray-600">AI-Powered Cost Pool Classification</p></header><div id="user-profile" class="absolute top-4 right-4 text-right"></div><nav id="main-nav" class="flex justify-center mb-10 space-x-8 border-b pb-4"><a href="#upload" id="nav-upload" class="nav-link text-lg text-indigo-600 hover:text-indigo-800 font-medium">New Upload</a><a href="#history" id="nav-history" class="nav-link text-lg text-indigo-600 hover:text-indigo-800 font-medium">Job History</a><a href="#pipelines" id="nav-pipelines" class="nav-link text-lg text-indigo-600 hover:text-indigo-800 font-medium hidden">Pipelines</a><a href="#admin" id="nav-admin" class="nav-link text-lg text-indigo-600 hover:text-indigo-800 font-medium hidden">Tenant Admin</a></nav><div id="upload-view" class="view">${getUploadViewHTML()}</div><div id="history-view" class="view">${getHistoryViewHTML()}</div><div id="review-view" class="view">${getReviewViewHTML()}</div><div id="pipelines-view" class="view">${getPipelinesViewHTML()}</div><div id="admin-view" class="view">${getAdminViewHTML()}</div>`;
+        const getUploadViewHTML = () => `<div class="w-full max-w-2xl mx-auto p-8 space-y-8 bg-white rounded-xl shadow-lg"><form id="upload-form" class="space-y-6"><div><label for="pipeline-select" class="block text-sm font-medium text-gray-700">Select Processing Pipeline</label><select id="pipeline-select" required class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 rounded-md"></select></div><div><label class="block text-sm font-medium text-gray-700">Select a file to process:</label><div class="mt-2 flex justify-center px-6 pt-5 pb-6 border-2 border-gray-300 border-dashed rounded-md"><div class="space-y-1 text-center"><svg class="mx-auto h-12 w-12 text-gray-400" stroke="currentColor" fill="none" viewBox="0 0 48 48" aria-hidden="true"><path d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4V12a4 4 0 014-4h12l4-4h8a4 4 0 014 4v8m-12 4h.01M28 12h.01M20 12h.01M20 28h.01M12 28h.01M12 20h.01M20 20h.01M28 20h.01M36 20h.01M36 12h.01M36 28h.01M12 12h.01" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg><div class="flex text-sm text-gray-600"><label for="file-input" class="relative cursor-pointer bg-white rounded-md font-medium text-indigo-600 hover:text-indigo-500"><span>Upload a file</span><input id="file-input" name="file-upload" type="file" class="sr-only" accept=".csv"></label><p class="pl-1">or drag and drop</p></div><p id="file-name" class="text-xs text-gray-500">CSV files only</p></div></div></div><div><button type="submit" class="group relative w-full flex justify-center py-3 px-4 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700">Process File</button></div></form><div id="upload-status" class="text-center text-sm"></div></div>`;
+        const getHistoryViewHTML = () => `<h2 class="text-2xl font-bold text-gray-700 mb-4">Job History</h2><div class="bg-white rounded-lg shadow"><ul id="job-history-list" class="divide-y divide-gray-200"></ul></div>`;
+        const getReviewViewHTML = () => `<div class="flex justify-between items-center mb-4"><div><h2 class="text-2xl font-bold text-gray-700">Review Suggestions</h2><p id="review-job-id" class="text-sm text-gray-500 font-mono"></p></div><button id="download-csv-btn" class="py-2 px-4 border border-transparent text-sm font-medium rounded-md text-white bg-green-600 hover:bg-green-700">Download as CSV</button></div><div id="review-table-container" class="overflow-x-auto bg-white rounded-lg shadow max-h-[70vh]"><table class="min-w-full divide-y divide-gray-200"><thead class="bg-gray-100"><tr><th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-1/4">Original Data</th><th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-1/6">Cost Pool</th><th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-1/6">Cost Sub-Pool</th><th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-1/4">AI Reasoning</th><th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-24">Confidence</th><th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-24">Actions</th></tr></thead><tbody id="review-table-body" class="bg-white divide-y divide-gray-200"></tbody></table></div><div id="review-loader" class="hidden justify-center items-center p-10"><div class="loader"></div></div>`;
+        const getPipelinesViewHTML = () => `<div class="w-full max-w-4xl mx-auto p-8 bg-white rounded-xl shadow-lg"><h2 class="text-2xl font-bold text-gray-700 mb-6">Pipeline Configurations</h2><div class="mb-8"><h3 class="text-lg font-medium text-gray-800 mb-2">Create or Update a Pipeline</h3><div class="p-4 border rounded-md space-y-4"><div class="grid grid-cols-1 md:grid-cols-2 gap-4"><div><label for="pipeline-name" class="block text-sm font-medium">Pipeline Name</label><input type="text" id="pipeline-name" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm" placeholder="e.g., Accounts Payable Data"></div><div><label for="pipeline-sample-file" class="block text-sm font-medium">Upload Sample CSV to Map Columns</label><input type="file" id="pipeline-sample-file" class="mt-1 block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100"/></div></div><div id="mapping-editor" class="hidden"><div class="space-y-4"><div id="source-columns-section"></div><div id="target-columns-section"></div><button id="save-pipeline-btn" class="w-full py-2 px-4 bg-green-600 text-white rounded-md hover:bg-green-700">Save Pipeline Configuration</button></div><div id="pipeline-status" class="mt-4 text-center"></div></div></div></div><div><h3 class="text-lg font-medium text-gray-800 mb-2">Existing Pipelines</h3><ul id="pipeline-list" class="divide-y divide-gray-200"></ul></div></div>`;
+        const getAdminViewHTML = () => `<div class="grid grid-cols-1 md:grid-cols-2 gap-8"><div class="w-full p-8 space-y-8 bg-white rounded-xl shadow-lg"><h2 class="text-2xl font-bold text-gray-700">Invite New User</h2><form id="invite-form" class="space-y-6"><div><label for="new-user-email" class="block text-sm font-medium text-gray-700">New User's Email</label><input type="email" id="new-user-email" required class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm"></div><div><label for="new-user-role" class="block text-sm font-medium text-gray-700">Role</label><select id="new-user-role" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 rounded-md"><option value="uploader">Uploader</option><option value="viewer">Viewer</option></select></div><div><button type="submit" class="w-full flex justify-center py-2 px-4 border text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700">Send Invitation</button></div></form><div id="invite-status" class="text-center text-sm"></div></div><div class="w-full p-8 space-y-4 bg-white rounded-xl shadow-lg"><h2 class="text-2xl font-bold text-gray-700">Manage Current Users</h2><div id="user-management-status" class="text-center text-sm"></div><div id="user-list-container" class="overflow-y-auto max-h-96"><table class="min-w-full divide-y divide-gray-200"><thead class="bg-gray-50"><tr><th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">User</th><th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Role</th><th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Actions</th></tr></thead><tbody id="user-list-body" class="bg-white divide-y divide-gray-200"></tbody></table></div></div></div>`;
+
+        // --- INITIALIZATION & AUTH ---
+        function initialize() {
+            if (firebaseConfig.apiKey.startsWith("YOUR_")) {
+                 document.getElementById('app-container').innerHTML = `<div class="text-center text-lg text-red-700 font-bold p-4 bg-red-100 rounded-md">FATAL ERROR: Firebase configuration is not set.</div>`;
+                 return;
+            }
+            const app = window.firebase.initializeApp(firebaseConfig);
+            auth = window.firebase.getAuth(app);
+            db = window.firebase.getFirestore(app);
+            listenForAuthState();
+        }
+
+        function listenForAuthState() {
+            window.firebase.onAuthStateChanged(auth, async (user) => {
+                if (user) {
+                    currentUser = user;
+                    const idTokenResult = await user.getIdTokenResult(true);
+                    userClaims = idTokenResult.claims;
+                    
+                    if (!userClaims.tenantId) {
+                        renderLogin("Error: Account is not configured for a tenant.");
+                        await window.firebase.signOut(auth);
+                        return;
+                    }
+
+                    renderAppShell();
+                    setupEventListeners();
+                    fetchDefinitions();
+                    handleRouteChange();
+                    window.addEventListener('hashchange', handleRouteChange);
+                } else {
+                    currentUser = null;
+                    userClaims = null;
+                    listeners = {};
+                    renderLogin();
+                }
+            });
+        }
+        
+        // --- RENDERING ---
+        function renderLogin(errorMsg = '') {
+            document.getElementById('app-container').innerHTML = loginShellHTML;
+            document.getElementById('login-status').textContent = errorMsg;
+            document.getElementById('login-form').addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const email = document.getElementById('email').value;
+                const password = document.getElementById('password').value;
+                try {
+                    await window.firebase.signInWithEmailAndPassword(auth, email, password);
+                } catch(err) {
+                    document.getElementById('login-status').textContent = "Sign in failed. Please check your email and password.";
+                }
+            });
+        }
+
+        function renderAppShell() {
+            document.getElementById('app-container').innerHTML = getAppShellHTML();
+            uploadView = document.getElementById('upload-view');
+            historyView = document.getElementById('history-view');
+            reviewView = document.getElementById('review-view');
+            adminView = document.getElementById('admin-view');
+            pipelinesView = document.getElementById('pipelines-view');
+            document.getElementById('user-profile').innerHTML = `<p class="font-medium">${currentUser.email}</p><p class="text-xs text-gray-500">Role: ${userClaims.role}</p><button id="logout-btn" class="text-sm text-indigo-500 hover:underline">Sign Out</button>`;
+            if (userClaims.role === 'viewer') document.getElementById('nav-upload').classList.add('hidden');
+            if (userClaims.role === 'admin') {
+                document.getElementById('nav-pipelines').classList.remove('hidden');
+                document.getElementById('nav-admin').classList.remove('hidden');
+            }
+        }
+        
+        // --- DATA FETCHING ---
+        async function fetchDefinitions() {
+             try {
+                const defsDocRef = window.firebase.doc(db, "definitions", "hierarchical");
+                const docSnap = await window.firebase.getDoc(defsDocRef);
+                if (docSnap.exists()) {
+                    const fullDefs = docSnap.data().data;
+                    for (const pool in fullDefs) {
+                        structuredDefinitions[pool] = fullDefs[pool].sub_pools.map(sp => sp.name);
+                    }
+                } else { throw new Error("Definitions document not found."); }
+            } catch (e) { console.error("Failed to fetch definitions from Firestore:", e); }
+        }
+        
+        // --- ROUTING & PAGE LOGIC ---
+        function handleRouteChange() {
+            Object.values(listeners).forEach(unsubscribe => unsubscribe());
+            listeners = {};
+            const hash = window.location.hash || (userClaims.role === 'viewer' ? '#history' : '#upload');
+            document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+            document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
+
+            if (hash.startsWith('#review/')) {
+                showReviewPage(hash.substring(8));
+            } else if (hash === '#history') {
+                historyView.classList.add('active');
+                document.getElementById('nav-history').classList.add('active');
+                listenForJobHistory();
+            } else if (hash === '#pipelines' && userClaims.role === 'admin') {
+                pipelinesView.classList.add('active');
+                document.getElementById('nav-pipelines').classList.add('active');
+                loadAndRenderPipelines();
+            } else if (hash === '#admin' && userClaims.role === 'admin') {
+                adminView.classList.add('active');
+                document.getElementById('nav-admin').classList.add('active');
+                loadAndRenderUsers();
+            } else {
+                uploadView.classList.add('active');
+                document.getElementById('nav-upload').classList.add('active');
+                populatePipelineSelect();
+            }
+        }
+
+        function showReviewPage(jobId) {
+            currentJobId = jobId;
+            originalDataHeaders = [];
+            document.getElementById('review-job-id').textContent = `Job ID: ${jobId}`;
+            reviewView.classList.add('active');
+            listenForResults(jobId);
+        }
+
+        function listenForJobHistory() {
+            const historyList = document.getElementById('job-history-list');
+            const q = window.firebase.query(window.firebase.collection(db, "tenants", userClaims.tenantId, "jobs"), window.firebase.orderBy("createdAt", "desc"));
+            listeners.history = window.firebase.onSnapshot(q, (querySnapshot) => {
+                historyList.innerHTML = '';
+                if(querySnapshot.empty){
+                    historyList.innerHTML = `<li class="p-4 text-center text-gray-500">No jobs found.</li>`;
+                    return;
+                }
+                querySnapshot.forEach(doc => {
+                    const job = doc.data();
+                    const li = document.createElement('li');
+                    li.innerHTML = `<a href="#review/${job.id}" class="block hover:bg-gray-50 p-4"><div class="flex items-center justify-between"><div><p class="text-sm font-medium text-indigo-600 truncate">${job.originalFilename || 'Unknown File'}</p><p class="text-xs text-gray-500 font-mono">${job.id}</p><p class="text-xs text-gray-500">${job.totalRows || '...'} rows</p></div><div class="text-right"><p class="text-sm text-gray-900">${job.createdAt ? new Date(job.createdAt.seconds * 1000).toLocaleString() : 'N/A'}</p><span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${job.status === 'completed' ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'}">${job.status || 'unknown'}</span></div></div></a>`;
+                    historyList.appendChild(li);
+                });
+            });
+        }
+
+        function listenForResults(jobId) {
+            const tableBody = document.getElementById('review-table-body');
+            const loader = document.getElementById('review-loader');
+            tableBody.innerHTML = '';
+            loader.classList.remove('hidden');
+            loader.classList.add('flex');
+
+            const resultsCollection = window.firebase.collection(db, "tenants", userClaims.tenantId, "jobs", jobId, "rows");
+            listeners.results = window.firebase.onSnapshot(resultsCollection, (querySnapshot) => {
+                loader.classList.add('hidden');
+                loader.classList.remove('flex');
+                const results = [];
+                querySnapshot.forEach((doc) => {
+                    results.push({ id: doc.id, ...doc.data() });
+                });
+                tableData = results;
+                if (tableData.length > 0 && originalDataHeaders.length === 0) {
+                    originalDataHeaders = Object.keys(tableData[0].original_data);
+                }
+                renderTable();
+            });
+        }
+        
+        function renderTable() {
+            const tableBody = document.getElementById('review-table-body');
+            tableData.sort((a, b) => a.confidence - b.confidence);
+            tableBody.innerHTML = '';
+            tableData.forEach(item => {
+                const row = document.createElement('tr');
+                const confidenceClass = item.confidence < 0.5 ? 'confidence-low' : item.confidence < 0.85 ? 'confidence-mid' : 'confidence-high';
+                row.className = `align-top ${confidenceClass}`;
+                
+                const originalDataHtml = `<div class="max-h-40 overflow-y-auto text-xs bg-gray-50 p-2 rounded border"><pre class="whitespace-pre-wrap">${JSON.stringify(item.original_data, null, 2)}</pre></div>`;
+                const editedIndicator = item.manually_edited ? `<div class="flex-shrink-0 h-5 w-5 text-blue-500" title="Manually Edited"><svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" /></svg></div>` : '<div class="h-5 w-5"></div>';
+                const costPoolOptions = Object.keys(structuredDefinitions).map(pool => `<option value="${pool}" ${item.cost_pool === pool ? 'selected' : ''}>${pool}</option>`).join('');
+                const costPoolSelect = `<div class="flex items-center space-x-2"><select id="cost-pool-select-${item.id}" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 rounded-md">${editedIndicator}<option value="Unclassified">Unclassified</option>${costPoolOptions}</select></div>`;
+                
+                let subPoolOptions = '';
+                if (item.cost_pool !== 'Unclassified' && structuredDefinitions[item.cost_pool]) {
+                    subPoolOptions = structuredDefinitions[item.cost_pool].map(sub => `<option value="${sub}" ${item.cost_sub_pool === sub ? 'selected' : ''}>${sub}</option>`).join('');
+                }
+                const costSubPoolSelect = `<select id="cost-sub-pool-select-${item.id}" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 rounded-md"><option value="Unclassified">Unclassified</option>${subPoolOptions}</select>`;
+                
+                const reasoningHtml = `<div class="max-h-40 overflow-y-auto text-sm text-gray-800">${item.reasoning}</div>`;
+                const confidenceHtml = `<p class="text-sm font-mono text-gray-800">${(item.confidence * 100).toFixed(1)}%</p>`;
+                
+                const actionsHtml = `<div class="flex flex-col space-y-2"><button data-row-id="${item.id}" class="save-change-btn text-sm py-1 px-2 text-white bg-indigo-600 rounded-md hover:bg-indigo-700">Save</button><button data-row-id="${item.id}" class="audit-btn text-xs text-indigo-600 hover:underline">History</button></div>`;
+
+                row.innerHTML = `<td class="px-6 py-4">${originalDataHtml}</td><td class="px-6 py-4">${costPoolSelect}</td><td class="px-6 py-4">${costSubPoolSelect}</td><td class="px-6 py-4">${reasoningHtml}</td><td class="px-6 py-4 text-center">${confidenceHtml}</td><td class="px-6 py-4 text-center">${actionsHtml}</td>`;
+                tableBody.appendChild(row);
+            });
+        }
+        
+        async function loadAndRenderUsers() {
+            const userListBody = document.getElementById('user-list-body');
+            const userStatus = document.getElementById('user-management-status');
+            userListBody.innerHTML = '<tr><td colspan="3" class="text-center p-4">Loading users...</td></tr>';
+            try {
+                const idToken = await currentUser.getIdToken();
+                const response = await fetch(manageUsersFunctionUrl, {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${idToken}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: 'listUsers' })
+                });
+                const users = await response.json();
+                if (!response.ok) throw new Error(users.error);
+
+                userListBody.innerHTML = '';
+                users.forEach(user => {
+                    const row = document.createElement('tr');
+                    const isCurrentUser = user.uid === currentUser.uid;
+                    row.innerHTML = `<td class="px-4 py-3 text-sm text-gray-800">${user.email} ${isCurrentUser ? '<span class="text-xs text-indigo-600">(You)</span>' : ''}</td><td class="px-4 py-3"><select data-uid="${user.uid}" class="role-select text-sm rounded-md border-gray-300" ${isCurrentUser ? 'disabled' : ''}><option value="uploader" ${user.role === 'uploader' ? 'selected' : ''}>Uploader</option><option value="viewer" ${user.role === 'viewer' ? 'selected' : ''}>Viewer</option></select></td><td class="px-4 py-3 text-sm space-x-2"><button data-uid="${user.uid}" data-action="disable" data-disabled="${!user.disabled}" class="disable-btn text-yellow-600 hover:text-yellow-800" ${isCurrentUser ? 'disabled' : ''}>${user.disabled ? 'Enable' : 'Disable'}</button><button data-uid="${user.uid}" data-email="${user.email}" class="delete-btn text-red-600 hover:text-red-800" ${isCurrentUser ? 'disabled' : ''}>Delete</button></td>`;
+                    userListBody.appendChild(row);
+                });
+            } catch(e) { userStatus.textContent = `Error loading users: ${e.message}`; }
+        }
+        
+        async function loadAndRenderPipelines() {
+            const pipelineList = document.getElementById('pipeline-list');
+            const q = window.firebase.query(window.firebase.collection(db, "tenants", userClaims.tenantId, "pipelines"), window.firebase.orderBy("updatedAt", "desc"));
+            listeners.pipelines = window.firebase.onSnapshot(q, (querySnapshot) => {
+                pipelineList.innerHTML = '';
+                if(querySnapshot.empty) {
+                    pipelineList.innerHTML = `<li class="p-4 text-center text-gray-500">No pipelines configured.</li>`;
+                    return;
+                }
+                querySnapshot.forEach(doc => {
+                    const pipeline = doc.data();
+                    const li = document.createElement('li');
+                    li.innerHTML = `<div class="p-4">
+                        <p class="text-sm font-medium text-indigo-600">${pipeline.name}</p>
+                        <p class="text-xs text-gray-500">Source Columns: ${pipeline.sourceColumnsForAI.join(', ')}</p>
+                    </div>`;
+                    pipelineList.appendChild(li);
+                });
+            });
+        }
+
+        async function populatePipelineSelect() {
+            const pipelineSelect = document.getElementById('pipeline-select');
+            if (!pipelineSelect) return;
+            const q = window.firebase.query(window.firebase.collection(db, "tenants", userClaims.tenantId, "pipelines"));
+            const querySnapshot = await window.firebase.getDocs(q);
+            pipelineSelect.innerHTML = '<option value="">-- Select a Pipeline --</option>';
+            querySnapshot.forEach(doc => {
+                const pipeline = doc.data();
+                pipelineSelect.innerHTML += `<option value="${pipeline.name}">${pipeline.name}</option>`;
+            });
+        }
+
+        // --- EVENT HANDLERS ---
+        function setupEventListeners() {
+            document.getElementById('logout-btn').addEventListener('click', () => window.firebase.signOut(auth));
+            
+            const uploadForm = document.getElementById('upload-form');
+            if (uploadForm) {
+                uploadForm.addEventListener('submit', handleUploadSubmit);
+                document.getElementById('file-input').addEventListener('change', (e) => {
+                    document.getElementById('file-name').textContent = e.target.files.length > 0 ? e.target.files[0].name : 'CSV files only';
+                });
+            }
+
+            const inviteForm = document.getElementById('invite-form');
+            if (inviteForm) { inviteForm.addEventListener('submit', handleInviteSubmit); }
+            
+            const pipelineView = document.getElementById('pipelines-view');
+            if (pipelineView) {
+                pipelineView.addEventListener('change', handlePipelineSampleUpload);
+                pipelineView.addEventListener('click', handlePipelineClick);
+            }
+
+            const reviewView = document.getElementById('review-view');
+            if (reviewView) {
+                reviewView.addEventListener('click', handleReviewTableClick);
+                reviewView.addEventListener('change', handleCostPoolChange);
+            }
+            
+            document.getElementById('close-audit-modal').addEventListener('click', closeAuditModal);
+            document.getElementById('close-audit-modal-btn').addEventListener('click', closeAuditModal);
+            
+            const adminView = document.getElementById('admin-view');
+            if(adminView) {
+                adminView.addEventListener('click', handleUserManagementClick);
+                adminView.addEventListener('change', handleUserManagementChange);
+            }
+        }
+
+        async function handleUploadSubmit(e) {
+            e.preventDefault();
+            const file = document.getElementById('file-input').files[0];
+            const pipelineId = document.getElementById('pipeline-select').value;
+            if (!file || !pipelineId) {
+                document.getElementById('upload-status').textContent = 'Please select a pipeline and a file.';
+                return;
+            }
+
+            const jobId = crypto.randomUUID();
+            const statusMsgEl = document.getElementById('upload-status');
+            statusMsgEl.textContent = 'Uploading...';
+            
+            const formData = new FormData();
+            formData.append('file', file);
+            
+            const urlWithParams = `${uploadFileFunctionUrl}?jobId=${jobId}&pipelineId=${pipelineId}`;
+            const idToken = await currentUser.getIdToken();
+
+            try {
+                const response = await fetch(urlWithParams, { method: 'POST', body: formData, headers: { 'Authorization': `Bearer ${idToken}` }});
+                const result = await response.json();
+                if (response.ok) { window.location.hash = `#review/${result.jobId}`; } 
+                else { statusMsgEl.textContent = `Upload failed: ${result.error || 'Unknown error'}`; }
+            } catch (error) { statusMsgEl.textContent = 'Upload failed. See console for details.'; }
+        }
+        
+        async function handleInviteSubmit(e) {
+            e.preventDefault();
+            const inviteStatus = document.getElementById('invite-status');
+            const newEmail = document.getElementById('new-user-email').value;
+            const newRole = document.getElementById('new-user-role').value;
+            inviteStatus.textContent = 'Sending invitation...';
+            const idToken = await currentUser.getIdToken();
+            try {
+                const response = await fetch(inviteUserFunctionUrl, { method: 'POST', headers: { 'Authorization': `Bearer ${idToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ newEmail, newRole }) });
+                const result = await response.json();
+                if (response.ok) {
+                    inviteStatus.textContent = result.message;
+                    document.getElementById('invite-form').reset();
+                } else { throw new Error(result.error); }
+            } catch(error) { inviteStatus.textContent = `Error: ${error.message}`; }
+        }
+        
+        function handlePipelineClick(e) {
+            if (e.target.id === 'save-pipeline-btn') handleSavePipeline(e.target);
+        }
+
+        async function handlePipelineSampleUpload(e) {
+            if (e.target.id !== 'pipeline-sample-file') return;
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const text = await file.text();
+            const headers = text.split('\n')[0].split(',').map(h => h.trim());
+
+            const sourceContainer = document.getElementById('source-columns-section');
+            sourceContainer.innerHTML = '<label class="block text-sm font-medium mb-2">Select Columns for AI Analysis:</label>';
+            headers.forEach(header => {
+                sourceContainer.innerHTML += `<div><input type="checkbox" id="source-col-${header}" name="source-column" value="${header}" class="mr-2"><label for="source-col-${header}">${header}</label></div>`;
+            });
+            document.getElementById('mapping-editor').classList.remove('hidden');
+        }
+
+        async function handleSavePipeline(button) {
+            const pipelineName = document.getElementById('pipeline-name').value;
+            const sourceColumnsForAI = Array.from(document.querySelectorAll('input[name="source-column"]:checked')).map(cb => cb.value);
+            const pipelineStatus = document.getElementById('pipeline-status');
+
+            if (!pipelineName || sourceColumnsForAI.length === 0) {
+                pipelineStatus.textContent = 'Please provide a name and select at least one source column.';
+                return;
+            }
+
+            button.disabled = true;
+            button.textContent = 'Saving...';
+            
+            const configuration = {
+                name: pipelineName,
+                sourceColumnsForAI: sourceColumnsForAI,
+                classificationTargets: ['cost_pool', 'cost_sub_pool'] // Hardcoded for now
+            };
+
+            try {
+                const idToken = await currentUser.getIdToken();
+                const response = await fetch(createPipelineFunctionUrl, {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${idToken}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ pipelineName, configuration })
+                });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.error);
+                pipelineStatus.textContent = result.message;
+            } catch (e) {
+                pipelineStatus.textContent = `Error: ${e.message}`;
+            } finally {
+                button.disabled = false;
+                button.textContent = 'Save Pipeline Configuration';
+            }
+        }
+
+        function handleCostPoolChange(e) {
+            const rowId = e.target.id.split('-').pop();
+            if (e.target.id === `cost-pool-select-${rowId}`) {
+                const newCostPool = e.target.value;
+                const subPoolSelect = document.getElementById(`cost-sub-pool-select-${rowId}`);
+                subPoolSelect.innerHTML = '<option value="Unclassified">Unclassified</option>';
+                if (newCostPool !== 'Unclassified' && structuredDefinitions[newCostPool]) {
+                    const subPoolOptions = structuredDefinitions[newCostPool].map(sub => `<option value="${sub}">${sub}</option>`).join('');
+                    subPoolSelect.innerHTML += subPoolOptions;
+                }
+            }
+        }
+
+        async function handleSaveClick(button) {
+            const rowId = button.dataset.rowId;
+            const newCostPool = document.getElementById(`cost-pool-select-${rowId}`).value;
+            const newCostSubPool = document.getElementById(`cost-sub-pool-select-${rowId}`).value;
+            
+            button.textContent = "Saving...";
+            button.disabled = true;
+
+            try {
+                const idToken = await currentUser.getIdToken();
+                await fetch(updateRowFunctionUrl, {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${idToken}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        jobId: currentJobId, 
+                        rowId: rowId, 
+                        newCostPool: newCostPool,
+                        newCostSubPool: newCostSubPool
+                    })
+                });
+            } catch(error) {
+                console.error("Failed to update row:", error);
+                alert("Update failed. See console for details.");
+            }
+        }
+        
+        async function handleUserManagementAction(payload) {
+            const userStatus = document.getElementById('user-management-status');
+            userStatus.textContent = 'Processing...';
+            try {
+                const idToken = await currentUser.getIdToken();
+                const response = await fetch(manageUsersFunctionUrl, { method: 'POST', headers: { 'Authorization': `Bearer ${idToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.error);
+                userStatus.textContent = result.message;
+                loadAndRenderUsers();
+            } catch (e) { userStatus.textContent = `Error: ${e.message}`; }
+        }
+        
+        function handleReviewTableClick(e) {
+            if (e.target.classList.contains('save-change-btn')) handleSaveClick(e.target);
+            else if (e.target.classList.contains('audit-btn')) handleAuditClick(e);
+        }
+
+        function handleUserManagementClick(e) {
+            if (e.target.classList.contains('delete-btn')) {
+                const uid = e.target.dataset.uid;
+                const email = e.target.dataset.email;
+                if (confirm(`Are you sure you want to permanently delete user ${email}?`)) {
+                    handleUserManagementAction({ action: 'deleteUser', uid });
+                }
+            } else if (e.target.classList.contains('disable-btn')) {
+                const uid = e.target.dataset.uid;
+                const shouldBeDisabled = e.target.dataset.disabled === 'true';
+                handleUserManagementAction({ action: 'disableUser', uid, disabled: shouldBeDisabled });
+            }
+        }
+
+        function handleUserManagementChange(e) {
+             if (e.target.classList.contains('role-select')) {
+                const uid = e.target.dataset.uid;
+                const newRole = e.target.value;
+                handleUserManagementAction({ action: 'updateRole', uid, newRole });
+            }
+        }
+
+        function closeAuditModal() {
+            document.getElementById('audit-modal-backdrop').classList.add('hidden');
+        }
+
+        async function handleAuditClick(e) {
+            const rowId = e.target.dataset.rowId;
+            const auditContent = document.getElementById('audit-modal-content');
+            auditContent.innerHTML = `<div class="flex justify-center"><div class="loader"></div></div>`;
+            document.getElementById('audit-modal-backdrop').classList.remove('hidden');
+
+            const auditTrailCollection = window.firebase.collection(db, "tenants", userClaims.tenantId, "jobs", currentJobId, "rows", rowId, "audit_trail");
+            const q = window.firebase.query(auditTrailCollection, window.firebase.orderBy("timestamp", "desc"));
+            
+            try {
+                const querySnapshot = await window.firebase.getDocs(q);
+                if (querySnapshot.empty) { auditContent.innerHTML = `<p class="text-gray-500">No edit history for this item.</p>`; return; }
+                let html = '<ul class="divide-y divide-gray-200">';
+                querySnapshot.forEach(doc => {
+                    const event = doc.data();
+                    html += `<li class="py-3"><p class="text-sm text-gray-800">Field <strong>${event.field}</strong> changed</p><p class="text-sm text-gray-500">From <span class="font-medium text-red-600">"${event.oldValue}"</span> to <span class="font-medium text-green-600">"${event.newValue}"</span></p><p class="text-xs text-gray-400">by ${event.changedBy} on ${new Date(event.timestamp.seconds * 1000).toLocaleString()}</p></li>`;
+                });
+                html += '</ul>';
+                auditContent.innerHTML = html;
+            } catch(error) {
+                auditContent.innerHTML = `<p class="text-red-500">Could not load history.</p>`;
+            }
+        }
+        
+        function handleDownload() {
+            if (tableData.length === 0 || originalDataHeaders.length === 0) { return; }
+            const headers = [...originalDataHeaders, 'cost_pool', 'cost_sub_pool', 'confidence', 'reasoning', 'manually_edited'];
+            const csvRows = [headers.join(',')];
+            tableData.sort((a,b) => a.row_index - b.row_index).forEach(row => {
+                const originalValues = originalDataHeaders.map(header => {
+                    const value = row.original_data[header] || '';
+                    return `"${String(value).replace(/"/g, '""')}"`;
+                });
+                const classificationValues = [`"${row.cost_pool}"`, `"${row.cost_sub_pool}"`, row.confidence, `"${(row.reasoning || '').replace(/"/g, '""')}"`, row.manually_edited || false];
+                csvRows.push([...originalValues, ...classificationValues].join(','));
+            });
+            const csvString = csvRows.join('\n');
+            const blob = new Blob([csvString], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement('a');
+            const url = URL.createObjectURL(blob);
+            link.setAttribute('href', url);
+            link.setAttribute('download', `processed_${currentJobId}.csv`);
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }
+        
+        // --- START ---
+        initialize();
+    </script>
+</body>
+</html>

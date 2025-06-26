@@ -1,0 +1,19 @@
+{
+  "name": "gcp-csv-processor",
+  "version": "6.0.0",
+  "description": "Multi-tenant event-driven function to process CSVs and save results to Firestore.",
+  "main": "index.js",
+  "dependencies": {
+    "@google-cloud/functions-framework": "^3.0.0",
+    "@google-cloud/storage": "^7.0.0",
+    "@google-cloud/firestore": "^7.7.0",
+    "@google/genai": "^1.6.0",
+    "csv-parser": "^3.0.0"
+  },
+  "engines": {
+    "node": "22"
+  },
+  "scripts": {
+    "start": "functions-framework --target=processCSV"
+  }
+}

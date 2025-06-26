@@ -1,0 +1,10 @@
+{
+  "name": "firestore-definitions-uploader",
+  "version": "1.0.0",
+  "description": "A one-time script to upload CSV definitions to Firestore.",
+  "main": "upload-definitions.js",
+  "dependencies": {
+    "firebase-admin": "^12.1.0",
+    "csv-parser": "^3.0.0"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "projects": {
+    "default": "project-clarity-463800"
+  },
+  "targets": {
+    "project-clarity-463800": {
+      "hosting": {
+        "app": [
+          "project-clarity-463800"
+        ]
+      }
+    }
+  },
+  "etags": {}
+}

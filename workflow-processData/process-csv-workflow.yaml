@@ -1,0 +1,40 @@
+# process-csv-workflow.yaml
+# A workflow that is triggered by an Eventarc event for a new file in GCS.
+# It extracts file details from the event and executes a Cloud Run Job,
+# passing the bucket and file name as arguments.
+
+main:
+  params: [event]
+  steps:
+    - init:
+        assign:
+          - projectId: ${sys.get_env("GOOGLE_CLOUD_PROJECT_ID")}
+          - region: "us-central1"
+          - jobName: "process-csv-job"
+          - bucket: ${event.data.bucket}
+          - file: ${event.data.name}
+    - log_event:
+        call: sys.log
+        args:
+            text: ${"Received event for file " + file + " in bucket " + bucket}
+            severity: "INFO"
+    - execute_job:
+        call: googleapis.run.v1.namespaces.jobs.run
+        args:
+            name: ${"namespaces/" + projectId + "/jobs/" + jobName}
+            location: ${region}
+            body:
+                overrides:
+                    containerOverrides:
+                        - args:
+                            - ${bucket}
+                            - ${file}
+                    taskCount: 1
+        result: job_execution
+    - log_execution:
+        call: sys.log
+        args:
+            text: ${"Successfully started Cloud Run Job execution " + job_execution.name}
+            severity: "INFO"
+    - return_result:
+        return: ${job_execution}

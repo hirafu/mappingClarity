@@ -1,0 +1,13 @@
+{
+  "name": "manage-user-function",
+  "version": "1.0.0",
+  "description": "HTTP function for tenant admins to manage their users.",
+  "main": "index.js",
+  "dependencies": {
+    "@google-cloud/functions-framework": "^3.0.0",
+    "firebase-admin": "^12.1.0"
+  },
+  "engines": {
+    "node": "22"
+  }
+}
