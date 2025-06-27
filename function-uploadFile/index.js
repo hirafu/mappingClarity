@@ -55,9 +55,8 @@ exports.uploadFile = (req, res) => {
 
         // --- File Handling ---
         const jobId = req.query.jobId;
-        const pipelineId = req.query.pipelineId; // **NEW**
-        if (!jobId || !pipelineId) {
-            return reject(res.status(400).send({ error: 'A jobId and pipelineId are required.' }));
+        if (!jobId) {
+            return reject(res.status(400).send({ error: 'A jobId is required.' }));
         }
 
         const busboy = Busboy({ headers: req.headers });
@@ -88,13 +87,13 @@ exports.uploadFile = (req, res) => {
 
             const { filepath, originalFilename } = uploadedFile;
             // Construct the isolated, tenant-specific destination path
-            const gcsPath = `uploads/${tenantId}/${pipelineId}/${jobId}/${originalFilename}`;
+            const gcsPath = `uploads/${tenantId}/${jobId}/${originalFilename}`;
 
             try {
                 await bucket.upload(filepath, { destination: gcsPath });
                 fs.unlinkSync(filepath);
 
-                res.status(200).json({ jobId, pipelineId });
+                res.status(200).json({ jobId });
                 resolve();
             } catch (error) {
                 console.error(`Error uploading to GCS for job ${jobId}:`, error);
